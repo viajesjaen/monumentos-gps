@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>¿Qué tengo cerca?</title>
+<style>
+:root{--bg:#faf7f2;--fg:#2a2118;--muted:#7a6c5d;--card:#fff;--line:#e6dccd;--accent:#b4531f;--accent-fg:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1612;--fg:#f1e9dd;--muted:#a89886;--card:#262019;--line:#3a3128;--accent:#e07a3f;--accent-fg:#1b1612}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:Georgia,serif;line-height:1.5;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+main{max-width:600px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.7rem;margin:8px 0 4px}
+.sub,.msg,.meta,button,select,a.more{font-family:system-ui,sans-serif}
+.sub{color:var(--muted);margin:0 0 16px;font-size:.95rem}
+.row{display:flex;gap:10px;margin:10px 0;flex-wrap:wrap}
+button,select{font-size:1rem;font-weight:600;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:12px 14px;border-radius:12px;flex:1;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.msg{color:var(--muted);font-size:.9rem;margin:8px 0}
+.item{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-top:10px;overflow:hidden}
+.head{display:flex;gap:12px;align-items:center;padding:12px;cursor:pointer}
+.thumb{width:64px;height:64px;border-radius:10px;background:var(--line);object-fit:cover;flex:none}
+.info{flex:1;min-width:0}
+.info h2{font-size:1.05rem;margin:0}
+.meta{color:var(--muted);font-size:.85rem}
+.arrow{width:34px;height:34px;flex:none;transition:transform .2s;color:var(--accent)}
+.body{display:none;padding:0 14px 14px;border-top:1px solid var(--line)}
+.item.open .body{display:block}
+.body img{width:100%;border-radius:10px;margin-top:12px}
+.body p{margin:10px 0}
+a.more{color:var(--accent);font-weight:600;font-size:.95rem}
+.cam{display:none;position:relative;border-radius:16px;overflow:hidden;background:#000;aspect-ratio:3/4;margin:10px 0}
+.cam video{width:100%;height:100%;object-fit:cover}
+.cross{position:absolute;left:50%;top:42%;width:46px;height:46px;margin:-23px 0 0 -23px;border:2px solid rgba(255,255,255,.85);border-radius:50%}
+.ov{position:absolute;left:8px;right:8px;bottom:8px;display:flex;flex-direction:column;gap:6px}
+.tag{background:rgba(0,0,0,.7);color:#fff;border-radius:12px;padding:10px 12px;font-family:system-ui,sans-serif;cursor:pointer}
+.dbg{position:absolute;top:8px;left:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;font:.7rem system-ui,sans-serif;padding:4px 8px;border-radius:8px}
+.tag.main{border:2px solid var(--accent)}
+.tag b{display:block;font-size:1rem}
+.tag span{font-size:.8rem;opacity:.85}
+</style>
+</head>
+<body>
+<main>
+  <h1>¿Qué tengo cerca?</h1>
+  <p class="sub">Monumentos y lugares de interés a tu alrededor, con datos de Wikipedia.</p>
+
+  <div class="row">
+    <button id="go" class="primary">📍 Buscar cerca de mí</button>
+  </div>
+  <div class="row">
+    <button id="camMode">📷 Modo cámara: apunta y descubre</button>
+  </div>
+  <div class="cam" id="cam">
+    <video id="cv" playsinline muted></video>
+    <div class="dbg" id="dbg">Esperando brújula…</div>
+    <div class="cross"></div>
+    <div class="ov" id="ov"></div>
+  </div>
+  <div class="row">
+    <select id="radius" aria-label="Radio">
+      <option value="300">Radio 300 m</option>
+      <option value="600" selected>Radio 600 m</option>
+      <option value="1500">Radio 1,5 km</option>
+      <option value="5000">Radio 5 km</option>
+    </select>
+    <button id="compass">🧭 Activar brújula</button>
+  </div>
+  <label class="msg" style="display:flex;gap:8px;align-items:center;margin:4px 0"><input type="checkbox" id="onlyMon" checked> Solo monumentos y edificios históricos</label>
+  <p class="msg" id="status"></p>
+  <div id="list"></div>
+  <p class="msg">Datos: Wikipedia (CC BY-SA). La posición solo se usa para esta búsqueda.</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let pos = null, heading = null, items = [];
+
+const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML };
+const status = t => $('status').textContent = t;
+const rad = x => x * Math.PI / 180;
+
+function distance(a, b, c, d) { // metros (haversine)
+  const R = 6371000, dLat = rad(c - a), dLon = rad(d - b);
+  const h = Math.sin(dLat/2)**2 + Math.cos(rad(a)) * Math.cos(rad(c)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function bearing(a, b, c, d) { // grados desde (a,b) hacia (c,d)
+  const y = Math.sin(rad(d - b)) * Math.cos(rad(c));
+  const x = Math.cos(rad(a)) * Math.sin(rad(c)) - Math.sin(rad(a)) * Math.cos(rad(c)) * Math.cos(rad(d - b));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+const fmt = m => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km';
+
+// ---------- Búsqueda ----------
+$('go').onclick = () => {
+  if (!navigator.geolocation) return status('Tu navegador no admite geolocalización.');
+  status('Obteniendo tu ubicación…');
+  navigator.geolocation.getCurrentPosition(p => {
+    pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+    search();
+  }, e => status(e.code === 1
+      ? 'Permiso de ubicación denegado. Actívalo en los ajustes del navegador.'
+      : 'No se pudo obtener la ubicación.'),
+  { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+};
+$('radius').onchange = () => pos && search();
+
+let allItems = [];
+const MON_CAT = /monument|bien(es)? de inter[eé]s cultural|patrimonio|iglesia|catedral|bas[ií]lica|ermita|capilla|convento|monasterio|castillo|alc[aá]zar|alcazaba|fortaleza|fortificaci|torre|muralla|puerta|arco|palacio|mezquita|sinagoga|acueducto|puente|yacimiento|ruinas|mausoleo|teatro romano|anfiteatro|termas|baños [aá]rabes|pósito|ayuntamiento|casa consistorial|lonja|cruz|columna|fuente|hospital de|universidad hist|colegio hist/i;
+const MON_TITLE = /^(catedral|iglesia|bas[ií]lica|ermita|capilla|convento|monasterio|castillo|alc[aá]zar|alcazaba|torre|muralla|puerta|arco|palacio|mezquita|sinagoga|acueducto|puente|monumento|cruz|columna|fuente|real|pósito|ayuntamiento)\b/i;
+const isMonument = it => MON_CAT.test(it.cats) || MON_TITLE.test(it.title);
+
+function applyFilter() {
+  items = $('onlyMon').checked ? allItems.filter(isMonument) : allItems;
+  const hidden = allItems.length - items.length;
+  status(items.length
+    ? items.length + ' ' + ($('onlyMon').checked ? 'monumentos y edificios históricos' : 'lugares') + ' cerca, del más cercano al más lejano.'
+      + (hidden > 0 ? ' (' + hidden + ' lugares ocultos por el filtro)' : '')
+    : allItems.length ? 'No hay monumentos en este radio. Amplía el radio o desmarca el filtro.'
+                      : 'No hay artículos en este radio. Prueba con uno mayor.');
+  render(); lock = null; lastHtml = '';
+}
+$('onlyMon').onchange = applyFilter;
+
+async function search() {
+  status('Buscando lugares cerca (±' + pos.acc + ' m de precisión)…');
+  const u = new URL('https://es.wikipedia.org/w/api.php');
+  Object.entries({
+    action: 'query', format: 'json', origin: '*',
+    generator: 'geosearch', ggscoord: pos.lat + '|' + pos.lon,
+    ggsradius: $('radius').value, ggslimit: 20,
+    prop: 'coordinates|pageimages|extracts|categories', clshow: '!hidden', cllimit: 500,
+    colimit: 20, piprop: 'thumbnail', pithumbsize: 400, pilimit: 20,
+    exintro: 1, explaintext: 1, exchars: 600, exlimit: 20
+  }).forEach(([k, v]) => u.searchParams.set(k, v));
+  try {
+    const j = await (await fetch(u)).json();
+    items = Object.values(j.query?.pages || {}).map(p => {
+      const c = p.coordinates?.[0];
+      return {
+        id: p.pageid, title: p.title, extract: p.extract || '', cats: (p.categories || []).map(c => c.title).join('|'),
+        img: p.thumbnail?.source || '',
+        dist: c ? distance(pos.lat, pos.lon, c.lat, c.lon) : Infinity,
+        brg: c ? bearing(pos.lat, pos.lon, c.lat, c.lon) : 0
+      };
+    }).sort((a, b) => a.dist - b.dist);
+    allItems = items; applyFilter();
+  } catch (e) { status('No se pudo consultar Wikipedia. Revisa tu conexión.'); }
+}
+
+// ---------- Lista ----------
+const ARROW = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 19 21l-7-4-7 4z"/></svg>';
+function render() {
+  $('list').innerHTML = items.map((it, i) => `
+    <div class="item" id="it${i}">
+      <div class="head" onclick="document.getElementById('it${i}').classList.toggle('open')">
+        ${it.img ? `<img class="thumb" src="${esc(it.img)}" alt="" loading="lazy">` : '<div class="thumb"></div>'}
+        <div class="info"><h2>${esc(it.title)}</h2><div class="meta">a ${fmt(it.dist)}</div></div>
+        <div class="arrow" data-b="${it.brg}" title="Dirección">${ARROW}</div>
+      </div>
+      <div class="body">
+        ${it.img ? `<img src="${esc(it.img)}" alt="${esc(it.title)}">` : ''}
+        <p>${esc(it.extract) || 'Sin resumen disponible.'}</p>
+        <a class="more" href="https://es.wikipedia.org/?curid=${it.id}" target="_blank" rel="noopener">Leer más en Wikipedia →</a>
+      </div>
+    </div>`).join('');
+  updateArrows();
+}
+function updateArrows() {
+  document.querySelectorAll('.arrow').forEach(a => {
+    const b = +a.dataset.b, rot = heading == null ? b : b - heading;
+    a.style.transform = 'rotate(' + rot + 'deg)';
+    a.title = heading == null ? 'Dirección respecto al norte' : 'Dirección respecto a donde apuntas';
+  });
+  updateCam();
+}
+
+// ---------- Modo cámara: lo que hay en la dirección a la que apuntas ----------
+let camStream = null, camOn = false, compassReady = false, lastCam = 0, lastHtml = '';
+
+function headingFromEvent(e) {
+  if (e.webkitCompassHeading != null) return e.webkitCompassHeading;           // iOS
+  if (e.alpha == null || e.beta == null || e.gamma == null) return null;       // Android: hacia donde mira la cámara trasera
+  const r = Math.PI / 180, x = e.beta * r, y = e.gamma * r, z = e.alpha * r;
+  const cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
+  const Vx = -cZ * sY - sZ * sX * cY, Vy = -sZ * sY + cZ * sX * cY;
+  let h = Math.atan2(Vx, Vy); if (h < 0) h += 2 * Math.PI;
+  return h / r;
+}
+
+async function ensureCompass() {
+  if (compassReady) return true;
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+      if (await DeviceOrientationEvent.requestPermission() !== 'granted') return false;
+    }
+    const handler = e => {
+      if (e.type === 'deviceorientation' && e.webkitCompassHeading == null && e.absolute !== true) return;
+      const h = headingFromEvent(e);
+      if (h == null) return;
+      if (heading == null) heading = h;
+      else heading = (heading + (((h - heading + 540) % 360) - 180) * 0.3 + 360) % 360;
+      updateArrows();
+    };
+    window.addEventListener('deviceorientationabsolute', handler, true);
+    window.addEventListener('deviceorientation', handler, true);
+    compassReady = true;
+    return true;
+  } catch (e) { return false; }
+}
+
+$('camMode').onclick = async () => {
+  if (camOn) {
+    camStream.getTracks().forEach(t => t.stop()); camStream = null; camOn = false;
+    clearInterval(camTimer); lock = null; setCross(0);
+    $('cam').style.display = 'none'; $('camMode').textContent = '📷 Modo cámara: apunta y descubre';
+    return;
+  }
+  const compassOk = await ensureCompass();
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    $('cv').srcObject = camStream; await $('cv').play();
+  } catch (e) { return status('No se pudo abrir la cámara (¿permiso denegado?).'); }
+  camOn = true; lastHtml = ''; lock = null; hist = [];
+  camTimer = setInterval(updateCam, 200);
+  $('cam').style.display = 'block'; $('camMode').textContent = '✖ Cerrar cámara';
+  status(compassOk ? 'Apunta al monumento, móvil quieto ~1 s con el círculo sobre él (o toca la imagen).'
+                   : 'Sin brújula no puedo saber hacia dónde apuntas. Usa la lista de abajo.');
+  if (!pos) $('go').click(); else updateCam();
+};
+
+function angD(a, b) { return Math.abs(((a - b + 540) % 360) - 180); }
+
+let hist = [], lock = null, dwellIdx = -1, dwellStart = 0, cooldown = 0, camTimer = null;
+const setOv = h => { if (h !== lastHtml) { $('ov').innerHTML = h; lastHtml = h; } };
+function setCross(p) {
+  const c = document.querySelector('.cross');
+  c.style.borderColor = p > 0 ? 'var(--accent)' : 'rgba(255,255,255,.85)';
+  c.style.boxShadow = p > 0 ? 'inset 0 0 0 ' + Math.round(p * 23) + 'px rgba(224,122,63,.6)' : 'none';
+}
+function unlock() { lock = null; dwellIdx = -1; cooldown = Date.now() + 1500; hist = []; setCross(0); setOv(''); }
+
+function updateCam() {
+  if (!camOn) return;
+  const now = Date.now();
+  if (!items.length) { setCross(0); return setOv('<div class="tag"><b>Buscando lugares…</b><span>Acepta el permiso de ubicación</span></div>'); }
+  if (heading == null) { $('dbg').textContent = 'Sin lectura de brújula'; setCross(0); return setOv('<div class="tag"><b>Sin brújula</b><span>No puedo saber hacia dónde apuntas. Activa la brújula o usa la lista de abajo.</span></div>'); }
+
+  const al = items.map((it, i) => ({ it, i, d: angD(it.brg, heading) })).filter(x => x.it.dist < Infinity).sort((p, q) => p.d - q.d)[0];
+  $('dbg').textContent = 'Rumbo ' + Math.round(heading) + '°' + (al ? ' · más alineado: ' + al.it.title + ' (Δ' + Math.round(al.d) + '°, ' + fmt(al.it.dist) + ')' : '');
+
+  // Ficha ya fijada: se mantiene hasta que te alejes del monumento o la cierres
+  if (lock) {
+    if (angD(lock.brg, heading) > 40) return unlock();
+    const it = items[lock.i];
+    return setOv('<div class="tag main"><b>' + esc(it.title) + '</b><span>a ' + fmt(it.dist) + '</span>'
+      + '<p style="margin:8px 0;font-size:.9rem">' + esc(it.extract.slice(0, 320)) + (it.extract.length > 320 ? '…' : '') + '</p>'
+      + '<span><a style="color:#fff" onclick="openItem(' + lock.i + ')">Ver ficha completa</a> · <a style="color:#fff" onclick="unlock()">Cerrar</a></span></div>');
+  }
+  if (now < cooldown) return;
+
+  // ¿Está el móvil quieto? (rumbo estable durante ~0,7 s)
+  hist.push({ t: now, h: heading }); hist = hist.filter(x => now - x.t <= 900);
+  const stable = hist.length >= 3 && now - hist[0].t >= 600 && hist.every(x => angD(x.h, heading) <= 10);
+
+  // Candidato en el centro de la imagen (±15°); a igualdad, el más cercano
+  const cand = items.map((it, i) => ({ it, i, d: angD(it.brg, heading) }))
+    .filter(x => x.d <= 25 && x.it.dist < Infinity)
+    .sort((p, q) => (p.d + Math.min(p.it.dist, 2000) / 100) - (q.d + Math.min(q.it.dist, 2000) / 100))[0];
+
+  if (!cand || !stable) { dwellIdx = -1; setCross(0); return setOv(''); }
+  if (cand.i !== dwellIdx) { dwellIdx = cand.i; dwellStart = now; }
+  const p = Math.min(1, (now - dwellStart) / 800);
+  setCross(p);
+  if (p >= 1) { lock = { i: cand.i, brg: cand.it.brg }; updateCam(); }
+}
+
+$('cv').onclick = () => {   // toque en la imagen = enfocar ya, sin esperar
+  if (!camOn || heading == null || lock) return;
+  const c = items.map((it, i) => ({ it, i, d: angD(it.brg, heading) }))
+    .filter(x => x.d <= 40 && x.it.dist < Infinity)
+    .sort((p, q) => (p.d + Math.min(p.it.dist, 2000) / 100) - (q.d + Math.min(q.it.dist, 2000) / 100))[0];
+  if (c) { lock = { i: c.i, brg: c.it.brg }; updateCam(); }
+  else setOv('<div class="tag"><b>Nada en esta dirección</b><span>Mira el marcador de arriba o amplía el radio</span></div>');
+};
+
+function openItem(i) {
+  const el = document.getElementById('it' + i);
+  el.classList.add('open'); el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ---------- Brújula (la flecha te indica hacia dónde está cada lugar) ----------
+$('compass').onclick = async () => {
+  if (await ensureCompass()) {
+    $('compass').textContent = '🧭 Brújula activada';
+    status('Las flechas apuntan hacia cada lugar: gira el móvil hasta que miren arriba.');
+  } else status('Este dispositivo no ofrece brújula o el permiso fue denegado.');
+};
+</script>
+</body>
+</html>
